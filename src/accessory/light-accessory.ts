@@ -171,7 +171,9 @@ export default class LightAccessory extends BaseAccessory {
           }
           return O.of(Math.trunc(value.hue));
         }),
-        O.tap((s) => O.of(this.logWithContext('debug', `Get hue result: ${s}`))),
+        O.tap((s) =>
+          O.of(this.logWithContext('debug', `Get hue result: ${s}`)),
+        ),
         O.orElse(() => this.fallbackColorValue(states, 'hue')),
       );
 
@@ -226,10 +228,20 @@ export default class LightAccessory extends BaseAccessory {
           ({ featureName }) => featureName === 'color',
         ),
         O.flatMap(({ value }) => {
-          if (typeof value !== 'object' || typeof value.saturation !== 'number') {
+          if (
+            typeof value !== 'object' ||
+            typeof value.saturation !== 'number'
+          ) {
             return O.none;
           }
-          return O.of(Math.trunc(value.saturation * 100));
+          // Alexa usually reports saturation as a 0-1 fraction, but has
+          // been observed returning it already as a 0-100 percentage.
+          // Detect which scale we got and clamp to a valid 0-100 range.
+          const asPercent =
+            value.saturation <= 1
+              ? value.saturation * 100
+              : value.saturation;
+          return O.of(Math.min(100, Math.max(0, Math.trunc(asPercent))));
         }),
         O.tap((s) =>
           O.of(this.logWithContext('debug', `Get saturation result: ${s}%`)),
