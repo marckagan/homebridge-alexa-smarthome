@@ -17,7 +17,13 @@ import {
   SupportedActionsType,
   SupportedFeatures,
 } from '../domain/alexa';
-import { AlexaApiError, HttpError, TimeoutError } from '../domain/alexa/errors';
+import {
+  AlexaApiError,
+  DeviceOffline,
+  HttpError,
+  RequestUnsuccessful,
+  TimeoutError,
+} from '../domain/alexa/errors';
 import EndpointStateResponse, {
   extractStates,
 } from '../domain/alexa/get-device-state.js';
@@ -35,6 +41,7 @@ import SetDeviceStateResponse, {
   validateSetStateSuccessful,
 } from '../domain/alexa/set-device-state.js';
 import DeviceStore from '../store/device-store';
+import { withRetry } from '../util/fp-util';
 import { PluginLogger } from '../util/plugin-logger';
 import {
   AirQualityQuery,
@@ -47,6 +54,19 @@ import {
   TempSensorQuery,
   ThermostatQuery,
 } from './graphql';
+
+// Actual response shape of the setEndpointFeatures mutation, confirmed
+// against a live capture of the Alexa website's own request/response for
+// the same mutation - distinct from EndpointStateResponse (the state-query
+// shape), which this call was previously (incorrectly) typed as.
+interface SetEndpointFeaturesResponse {
+  data: {
+    setEndpointFeatures: {
+      featureControlResponses: Array<{ endpointId: string }>;
+      errors: Array<{ endpointId: string; code: string }>;
+    };
+  };
+}
 
 export interface DeviceStatesCache {
   lastUpdated: Date;
@@ -232,12 +252,13 @@ export class AlexaApiWrapper {
       featureName,
       ...(Object.keys(payload).length > 0 ? { payload } : {}),
     };
-    return pipe(
+    const attempt: TaskEither<AlexaApiError, void> = pipe(
       TE.tryCatch(
         () =>
-          this.executeGraphQlQuery<EndpointStateResponse>(SetEndpointFeatures, {
-            featureControlRequests: [request],
-          }),
+          this.executeGraphQlQuery<SetEndpointFeaturesResponse>(
+            SetEndpointFeatures,
+            { featureControlRequests: [request] },
+          ),
         (reason) =>
           new HttpError(
             `Error setting smart home device state. Reason: ${
@@ -245,8 +266,35 @@ export class AlexaApiWrapper {
             }`,
           ),
       ),
-      TE.map(constVoid),
+      // The mutation can return HTTP 200 with a non-empty `errors` array
+      // when Alexa's backend accepts the request but can't actually deliver
+      // it to the device (e.g. it's mid-reconnect) - previously this was
+      // never inspected, so a failed set silently reported success.
+      TE.flatMapEither((res) => {
+        const err = res?.data?.setEndpointFeatures?.errors?.[0];
+        if (!err) {
+          return E.right(undefined);
+        }
+        return E.left(
+          err.code === DeviceOffline.code
+            ? new DeviceOffline()
+            : new RequestUnsuccessful(
+                'Error setting smart home device state',
+                err.code,
+              ),
+        );
+      }),
     );
+    // Mirrors the persistence a human gets by retrying a couple of times
+    // in the Alexa app/website when a device is mid-reconnect - a single
+    // fire-and-forget attempt gives up on exactly the cases that eventually
+    // succeed there. Only retry the transient DeviceOffline case, not
+    // genuine errors like an invalid value.
+    return withRetry(attempt, {
+      retries: 3,
+      delayMs: 1500,
+      shouldRetry: (e) => e instanceof DeviceOffline,
+    });
   }
 
   setDeviceState(
