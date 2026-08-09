@@ -150,7 +150,12 @@ export default class LightAccessory extends BaseAccessory {
         },
         () => {
           this.updateCacheValue({
-            value: newBrightness,
+            // Cache the numeric value, not the stringified `newBrightness`
+            // sent in the API request body - handleBrightnessGet's parser
+            // only accepts `typeof value === 'number'`, matching how a live
+            // Alexa response represents it, so caching the string form here
+            // would silently fail that check on the next Get.
+            value,
             featureName: 'brightness',
           });
         },
@@ -256,9 +261,7 @@ export default class LightAccessory extends BaseAccessory {
           // been observed returning it already as a 0-100 percentage.
           // Detect which scale we got and clamp to a valid 0-100 range.
           const asPercent =
-            value.saturation <= 1
-              ? value.saturation * 100
-              : value.saturation;
+            value.saturation <= 1 ? value.saturation * 100 : value.saturation;
           return O.of(Math.min(100, Math.max(0, Math.trunc(asPercent))));
         }),
         O.tap((s) =>

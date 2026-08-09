@@ -127,31 +127,31 @@ export default abstract class BaseAccessory {
         }
         return [fromCache, states] as [boolean, S[]];
       }),
-      TE.flatMap(([fromCache, states]) =>
+      TE.flatMap(([, states]) =>
         pipe(
           toCharacteristicStateFn(states),
           O.match(
             () =>
-              // Alexa's response can be non-empty (e.g. power/color present)
-              // while still omitting the specific feature we asked about -
-              // not just returning an empty array outright. Whenever the
-              // live fetch doesn't have what we need, fall back to the
-              // last-known cached states for this device (which includes
-              // anything we ourselves wrote via updateCacheValue after a
-              // successful set) before giving up.
-              !fromCache
-                ? pipe(
-                    this.platform.deviceStore.getCacheStatesForDevice(
-                      this.device.id,
-                    ) as unknown as S[],
-                    toCharacteristicStateFn,
-                    O.match(
-                      () =>
-                        TE.left(new InvalidResponse('State not available')),
-                      (c: C) => TE.right(c),
-                    ),
-                  )
-                : TE.left(new InvalidResponse('State not available')),
+              // Alexa's response - whether freshly fetched or served from
+              // getDeviceStateGraphQl's own query-level cache - can be
+              // non-empty (e.g. power/color present) while still omitting
+              // the specific feature we asked about, not just returning an
+              // empty array outright. Either way, fall back to the
+              // device-store's last-known state (which includes anything
+              // we ourselves wrote via updateCacheValue after a successful
+              // set) before giving up - there's no reason to only try this
+              // when the outer call happened to be a live fetch, since the
+              // feature is equally missing from a cached query response.
+              pipe(
+                this.platform.deviceStore.getCacheStatesForDevice(
+                  this.device.id,
+                ) as unknown as S[],
+                toCharacteristicStateFn,
+                O.match(
+                  () => TE.left(new InvalidResponse('State not available')),
+                  (c: C) => TE.right(c),
+                ),
+              ),
             (c: C) => TE.right(c),
           ),
         ),
