@@ -135,14 +135,22 @@ export default class LightAccessory extends BaseAccessory {
     if (typeof value !== 'number') {
       throw this.invalidValueError;
     }
-    const newBrightness = value.toString(10);
     const attemptSet = () =>
       this.platform.alexaApi.setDeviceStateGraphQl(
         this.device.endpointId,
         'brightness',
         'setBrightness',
         {
-          brightness: newBrightness,
+          // Must be a number, not a string: a live capture of the Alexa
+          // website's own setBrightness mutation confirmed its payload is
+          // `{"brightness": 95}` (an int), not `{"brightness": "95"}`.
+          // Sending a stringified value here is what caused every single
+          // brightness set to fail with a generic INTERNAL_ERROR (a type
+          // mismatch reaching Alexa's resolver, not a device/network
+          // issue) - confirmed live: power sets (no numeric payload)
+          // worked fine the whole time, only brightness failed, 100% of
+          // attempts, regardless of device connectivity.
+          brightness: value,
         },
       );
 
