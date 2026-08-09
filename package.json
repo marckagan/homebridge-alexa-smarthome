@@ -49,13 +49,11 @@
     "async-mutex": "^0.5.0",
     "extend": "^3.0.2",
     "fp-ts": "^2.16.9",
-    "nearest-color": "^0.4.4",
     "ts-pattern": "^4.3.0",
     "uuid": "^9.0.1"
   },
   "devDependencies": {
     "@types/jest": "^29.5.14",
-    "@types/nearest-color": "^0.4.1",
     "@types/node": "^18.19.86",
     "@types/uuid": "^9.0.8",
     "@typescript-eslint/eslint-plugin": "^5.62.0",
