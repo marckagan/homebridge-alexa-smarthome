@@ -41,7 +41,6 @@ import SetDeviceStateResponse, {
   validateSetStateSuccessful,
 } from '../domain/alexa/set-device-state.js';
 import DeviceStore from '../store/device-store';
-import { withRetry } from '../util/fp-util';
 import { PluginLogger } from '../util/plugin-logger';
 import {
   AirQualityQuery,
@@ -252,7 +251,16 @@ export class AlexaApiWrapper {
       featureName,
       ...(Object.keys(payload).length > 0 ? { payload } : {}),
     };
-    const attempt: TaskEither<AlexaApiError, void> = pipe(
+    // A single attempt against this endpoint has been observed taking up to
+    // ~9 seconds on its own before Alexa's backend gives up and returns an
+    // error - that's already close to HomeKit's UI patience for a
+    // characteristic write. Retrying synchronously here would multiply that
+    // latency (2-3 retries could mean 20-30+ seconds) and reliably produce
+    // a stuck "Updating" state in the Home app. This method stays a single
+    // attempt; retries belong at the call site as a non-blocking background
+    // continuation (see light-accessory.ts) so HomeKit gets a fast response
+    // either way, with the value corrected afterward if a retry succeeds.
+    return pipe(
       TE.tryCatch(
         () =>
           this.executeGraphQlQuery<SetEndpointFeaturesResponse>(
@@ -285,16 +293,22 @@ export class AlexaApiWrapper {
         );
       }),
     );
-    // Mirrors the persistence a human gets by retrying a couple of times
-    // in the Alexa app/website when a device is mid-reconnect - a single
-    // fire-and-forget attempt gives up on exactly the cases that eventually
-    // succeed there. Only retry the transient DeviceOffline case, not
-    // genuine errors like an invalid value.
-    return withRetry(attempt, {
-      retries: 3,
-      delayMs: 1500,
-      shouldRetry: (e) => e instanceof DeviceOffline,
-    });
+  }
+
+  /**
+   * True for errors worth a background retry - transient device/backend
+   * communication failures, not genuine issues like an invalid value.
+   * Broader than just DeviceOffline: a live failure was observed with code
+   * INTERNAL_ERROR (a generic Alexa backend error) for what was otherwise
+   * the same "device mid-reconnect" situation, so this isn't narrowed to
+   * one specific error code.
+   */
+  static isRetryableDeviceError(e: AlexaApiError): boolean {
+    return (
+      e instanceof DeviceOffline ||
+      (e instanceof RequestUnsuccessful &&
+        e.errorCode === 'INTERNAL_ERROR')
+    );
   }
 
   setDeviceState(

@@ -8,6 +8,8 @@ import { SupportedActionsType } from '../domain/alexa';
 import { LightbulbState } from '../domain/alexa/lightbulb';
 import * as lightMapper from '../mapper/light-mapper';
 import * as mapper from '../mapper/power-mapper';
+import { withRetry } from '../util/fp-util';
+import { AlexaApiWrapper } from '../wrapper/alexa-api-wrapper';
 import BaseAccessory from './base-accessory';
 
 export default class LightAccessory extends BaseAccessory {
@@ -134,7 +136,7 @@ export default class LightAccessory extends BaseAccessory {
       throw this.invalidValueError;
     }
     const newBrightness = value.toString(10);
-    return pipe(
+    const attemptSet = () =>
       this.platform.alexaApi.setDeviceStateGraphQl(
         this.device.endpointId,
         'brightness',
@@ -142,25 +144,36 @@ export default class LightAccessory extends BaseAccessory {
         {
           brightness: newBrightness,
         },
-      ),
-      TE.match(
-        (e) => {
-          this.logWithContext('errorT', 'Set brightness', e);
-          throw this.serviceCommunicationError;
-        },
-        () => {
-          this.updateCacheValue({
-            // Cache the numeric value, not the stringified `newBrightness`
-            // sent in the API request body - handleBrightnessGet's parser
-            // only accepts `typeof value === 'number'`, matching how a live
-            // Alexa response represents it, so caching the string form here
-            // would silently fail that check on the next Get.
-            value,
-            featureName: 'brightness',
-          });
-        },
-      ),
-    )();
+      );
+
+    // The Alexa app/website reflect a brightness change within 1-2 seconds
+    // (confirmed against real usage), but a single attempt against this
+    // same backend was observed taking up to ~9 seconds before even
+    // failing - which only makes sense if the app is updating its UI
+    // optimistically rather than waiting on full device-delivery
+    // confirmation. Mirror that: update HomeKit's value immediately, then
+    // confirm/retry against the real API in the background. Blocking this
+    // call on however long the full round trip takes is what produced a
+    // stuck "Updating" state in the Home app (confirmed live).
+    this.updateCacheValue({
+      // Cache the numeric value, not the stringified `newBrightness` sent
+      // in the API request body - handleBrightnessGet's parser only
+      // accepts `typeof value === 'number'`, matching how a live Alexa
+      // response represents it, so caching the string form here would
+      // silently fail that check on the next Get.
+      value,
+      featureName: 'brightness',
+    });
+
+    withRetry(attemptSet(), {
+      retries: 2,
+      delayMs: 3000,
+      shouldRetry: AlexaApiWrapper.isRetryableDeviceError,
+    })().then((result) => {
+      if (result._tag === 'Left') {
+        this.logWithContext('errorT', 'Set brightness', result.left);
+      }
+    });
   }
 
   async handleHueGet(): Promise<number> {
